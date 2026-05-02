@@ -20,7 +20,7 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 # --- КОНФИГУРАЦИЯ ---
-API_TOKEN = '8584754791:AAGyYVdKHBLgsaw5PmGGcO3wCEsqs5prcag'
+API_TOKEN = '8584754791:AAGtZpb37q4DsF1KORfBQKbHwhoHcQLavlk'
 CHANNEL_HANDLE = "@OslntResourcee"
 CHANNEL_URL = "https://t.me/OslntResourcee"
 MY_ID = 8331626488
