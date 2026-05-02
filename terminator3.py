@@ -146,4 +146,4 @@ async def snose_exec(c: types.CallbackQuery):
 if __name__ == '__main__':
     Thread(target=run_web).start()
     executor.start_polling(dp, skip_updates=True)
-    
+
