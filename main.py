@@ -1,4 +1,3 @@
-
 import logging
 import asyncio
 import os
@@ -10,45 +9,40 @@ import hashlib
 import time
 from datetime import datetime
 
-# Библиотеки aiogram 3.x
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, 
-    InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+    InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton,
+    ChatJoinRequest
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
-# База, Почта и Веб
 from redis.asyncio import Redis
 from aiosmtplib import send
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- КОНФИГУРАЦИЯ (ВСЕ ДАННЫЕ ВСТАВЛЕНЫ) ---
+# ========================= КОНФИГУРАЦИЯ =========================
 API_TOKEN = '8612963994:AAFRGV0DGXBJ0FVGefaaDqqyOC9-RFszUVY'
 REDIS_URL = "rediss://default:gQAAAAAAAb3QAAIgcDIwODVmMTlkNmZiZmY0NjlkOWQ2MDFjMzFlYWYzZWM0Ng@nearby-ewe-114128.upstash.io:6379"
-MY_ID = 8331626488
 
-# Канал и Подписка
-CHANNEL_URL = "https://t.me/+Tp4-Pe0Mkm5hN2Rk"
+OWNER_ID = 529380916                    # ← Новый главный владелец
+CHANNEL_URL = "https://t.me/+FfrOy9J7PnJkOTdk"
 CHANNEL_ID = -1003700976280 
 
-# Платежка LAVA
 LAVA_PROJECT_ID = "9537185b-5d14-4675-bfa8-d54a3fa6eb3b"
 LAVA_SECRET_KEY = "zx8xZeGW96AdxD5Xpa8rO5B7tytaaUSbhz6DhGCO607auEWzP1AlJxDW01Mk0MVo"
 
-# Почта для сносов
 EMAIL_SENDER = "samir2012samiro3uehsjdhd@gmail.com"
 EMAIL_PASSWORD = "sfuowmzltvatcpjy"
 
-# Настройка логирования
+# ================================================================
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(
     token=API_TOKEN, 
     default=DefaultBotProperties(parse_mode='Markdown')
@@ -59,78 +53,115 @@ redis = Redis.from_url(REDIS_URL, decode_responses=True)
 class AttackStates(StatesGroup):
     waiting_for_target = State()
 
-# --- СИСТЕМА ПРОВЕРКИ ПОДПИСКИ ---
-async def check_subscription(user_id: int):
-    if user_id == MY_ID: return True
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-    except Exception as e:
-        logger.error(f"Subscription check error: {e}")
-        return False
-    return False
+# ====================== ПРОВЕРКИ ПРАВ ======================
+async def is_owner(user_id: int):
+    return user_id == OWNER_ID
 
-def sub_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Вступить в штаб", url=CHANNEL_URL)],
-        [InlineKeyboardButton(text="✅ Я ПОДПИСАЛСЯ", callback_data="check_sub")]
-    ])
+async def is_invincible(user_id: int):
+    if await is_owner(user_id): return True
+    data = await get_user_data(user_id)
+    return data.get("is_invincible", False)
 
-# --- ЛОГИКА БАЗЫ ДАННЫХ ---
+async def is_admin(user_id: int):
+    if await is_owner(user_id) or await is_invincible(user_id): return True
+    data = await get_user_data(user_id)
+    return data.get("is_admin", False)
+
+# ====================== БАЗА ДАННЫХ ======================
 async def get_user_data(user_id: int):
     raw = await redis.get(f"u:{user_id}")
     if raw:
         data = json.loads(raw)
     else:
-        data = {"strikes": 0, "refs": 0, "sub_expires": 0, "last_refill": "", "is_admin": False}
-    
-    if data.get("sub_expires", 0) > time.time():
-        today = datetime.now().strftime("%Y-%m-%d")
-        if data.get("last_refill") != today:
-            data["strikes"] += 5
-            data["last_refill"] = today
-            await redis.set(f"u:{user_id}", json.dumps(data))
-            try: await bot.send_message(user_id, "🎁 **VIP БОНУС:** Начислено 5 ударов на сегодня!")
-            except: pass
+        data = {
+            "strikes": 0,
+            "refs": 0,
+            "sub_expires": 0,
+            "last_refill": "",
+            "is_admin": False,
+            "is_invincible": False
+        }
     return data
 
 async def save_user_data(user_id: int, data: dict):
     await redis.set(f"u:{user_id}", json.dumps(data))
 
-# --- АДМИН-КОМАНДЫ (ИСПРАВЛЕНЫ ОТСТУПЫ) ---
+# ====================== АВТО-ПРИЕМ В КАНАЛ ======================
+@dp.chat_join_request()
+async def auto_approve(chat_join: ChatJoinRequest):
+    try:
+        await chat_join.approve()
+        await bot.send_message(
+            chat_join.from_user.id,
+            "✅ **Заявка одобрена!**\nДобро пожаловать в Cipizza.\nНажмите /start"
+        )
+    except Exception as e:
+        logger.error(f"Auto-approve error: {e}")
+
+# ====================== ПРОВЕРКА ПОДПИСКИ ======================
+async def check_subscription(user_id: int):
+    if user_id == OWNER_ID: return True
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            return True
+    except:
+        return False
+    return False
+
+def sub_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Вступить в канал", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ Я ПОДПИСАЛСЯ", callback_data="check_sub")]
+    ])
+
+# ====================== АДМИН КОМАНДЫ ======================
+@dp.message(Command("setinvincible"))
+async def set_invincible(message: Message, command: CommandObject):
+    if not await is_owner(message.from_user.id):
+        return await message.answer("⛔ Только владелец может выдавать неприкосновенность.")
+    try:
+        uid, status = command.args.split()
+        uid = int(uid)
+        val = status == "1"
+        data = await get_user_data(uid)
+        data["is_invincible"] = val
+        await save_user_data(uid, data)
+        await message.answer(f"✅ Пользователь `{uid}` теперь {'**НЕПРИКОСНОВЕННЫЙ**' if val else 'обычный пользователь'}")
+    except:
+        await message.answer("Формат: `/setinvincible ID 1` или `/setinvincible ID 0`")
+
 @dp.message(Command("monifoldgive"))
 async def admin_give(message: Message, command: CommandObject):
-    u_data = await get_user_data(message.from_user.id)
-    if message.from_user.id != MY_ID and not u_data.get("is_admin"): return
+    if not await is_admin(message.from_user.id): return
     try:
-        args = command.args.split()
-        uid, count = int(args[0]), int(args[1])
-        target = await get_user_data(uid)
-        target["strikes"] += count
-        await save_user_data(uid, target)
+        uid, count = command.args.split()
+        target = await get_user_data(int(uid))
+        target["strikes"] += int(count)
+        await save_user_data(int(uid), target)
         await message.answer(f"✅ Выдано {count} ударов пользователю `{uid}`")
     except:
-        await message.answer("Ошибка. Формат: `/monifoldgive ID колво`")
+        await message.answer("Формат: `/monifoldgive ID количество`")
 
 @dp.message(Command("monifold_setadmin"))
 async def set_admin(message: Message, command: CommandObject):
-    if message.from_user.id != MY_ID: return
+    if not await is_owner(message.from_user.id): return
     try:
-        args = command.args.split()
-        uid, status = int(args[0]), args[1]
-        target = await get_user_data(uid)
-        target["is_admin"] = True if status == "1" else False
-        await save_user_data(uid, target)
-        await message.answer(f"✅ Статус админа для `{uid}` обновлен на {status}")
+        uid, status = command.args.split()
+        uid = int(uid)
+        val = status == "1"
+        data = await get_user_data(uid)
+        data["is_admin"] = val
+        await save_user_data(uid, data)
+        await message.answer(f"✅ Обычный админ для `{uid}` {'включён' if val else 'выключен'}")
     except:
-        await message.answer("Ошибка. Формат: `/monifold_setadmin ID 1/0`")
+        await message.answer("Формат: `/monifold_setadmin ID 1/0`")
 
-# --- МОДУЛЬ ОПЛАТЫ LAVA ---
+# ====================== LAVA ======================
 async def create_lava_invoice(amount, order_id):
     url = "https://api.lava.top/business/invoice/create"
     headers = {"Authorization": LAVA_SECRET_KEY, "Accept": "application/json"}
-    payload = {"sum": amount, "orderId": order_id, "shopId": LAVA_PROJECT_ID, "caption": "God Engine Refill"}
+    payload = {"sum": amount, "orderId": order_id, "shopId": LAVA_PROJECT_ID, "caption": "Cipizza Refill"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
@@ -144,30 +175,29 @@ async def handle_lava_webhook(request):
             user_id, p_type, p_val = int(parts[0]), parts[1], int(parts[2])
             u_data = await get_user_data(user_id)
             if p_type == "pack": u_data["strikes"] += p_val
-            elif p_type == "sub": u_data["sub_expires"] = max(time.time(), u_data["sub_expires"]) + (p_val * 86400)
+            elif p_type == "sub": u_data["sub_expires"] = max(time.time(), u_data.get("sub_expires", 0)) + (p_val * 86400)
             await save_user_data(user_id, u_data)
-            await bot.send_message(user_id, "✅ **ОПЛАТА ПОЛУЧЕНА!** Баланс обновлен автоматически.")
+            await bot.send_message(user_id, "✅ **ОПЛАТА ПРОШЛА УСПЕШНО!**")
             return aiohttp.web.Response(text="ok")
     except: pass
     return aiohttp.web.Response(status=400)
 
-# --- ГЛАВНЫЕ ХЭНДЛЕРЫ ---
-
+# ====================== ОСНОВНЫЕ КОМАНДЫ ======================
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
     if not await check_subscription(m.from_user.id):
-        return await m.answer("🛑 **ДОСТУП ОГРАНИЧЕН!**\nПодпишитесь на наш штаб для работы.", reply_markup=sub_kb())
+        return await m.answer("🛑 **ДОСТУП ОГРАНИЧЕН!**\nПодпишитесь на канал для доступа.", reply_markup=sub_kb())
     
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="☢️ НАНЕСТИ УДАР"), KeyboardButton(text="💎 МАГАЗИН")],
         [KeyboardButton(text="👤 ПРОФИЛЬ")]
     ], resize_keyboard=True)
-    await m.answer("⚔️ **GOD ENGINE v30.0 ONLINE**\nСистема готова к работе.", reply_markup=kb)
+    await m.answer("⚔️ **CIPIZZA v34.0**\nСистема активна.", reply_markup=kb)
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_btn(c: CallbackQuery):
     if await check_subscription(c.from_user.id):
-        await c.answer("✅ Доступ разрешен!")
+        await c.answer("✅ Доступ открыт!", show_alert=True)
         await c.message.delete()
         await cmd_start(c.message)
     else:
@@ -179,11 +209,10 @@ async def store_cmd(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💣 1 Удар — 65₽", callback_data="buy_p_pack_1_65")],
         [InlineKeyboardButton(text="🚀 5 Ударов — 250₽", callback_data="buy_p_pack_5_250")],
-        [InlineKeyboardButton(text="⚡ 10 Ударов — 450₽", callback_data="buy_p_pack_10_450")],
-        [InlineKeyboardButton(text="⭐ VIP НЕДЕЛЯ (+5/день) — 490₽", callback_data="buy_p_sub_7_490")],
-        [InlineKeyboardButton(text="🔥 VIP МЕСЯЦ (+5/день) — 1490₽", callback_data="buy_p_sub_30_1490")]
+        [InlineKeyboardButton(text="⭐ VIP НЕДЕЛЯ — 490₽", callback_data="buy_p_sub_7_490")],
+        [InlineKeyboardButton(text="🔥 VIP МЕСЯЦ — 1490₽", callback_data="buy_p_sub_30_1490")]
     ])
-    await m.answer("💳 **МАГАЗИН ЗАРЯДОВ**\nВыберите пакет:", reply_markup=kb)
+    await m.answer("💎 **CIPIZZA STORE**", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("buy_p_"))
 async def process_buy(c: CallbackQuery):
@@ -191,25 +220,33 @@ async def process_buy(c: CallbackQuery):
     order_id = f"{c.from_user.id}_{p_type}_{p_val}_{random.randint(100, 999)}"
     pay_url = await create_lava_invoice(price, order_id)
     if pay_url:
-        await c.message.answer(f"🛒 **Счет на {price}₽ создан!**", 
-                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ОПЛАТИТЬ ЧЕРЕЗ LAVA", url=pay_url)]]))
+        await c.message.answer(f"🛒 Счёт на {price}₽ создан", 
+                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ОПЛАТИТЬ", url=pay_url)]]))
     await c.answer()
 
 @dp.message(F.text == "👤 ПРОФИЛЬ")
 async def profile_cmd(m: Message):
     if not await check_subscription(m.from_user.id): return
     data = await get_user_data(m.from_user.id)
+    if await is_owner(m.from_user.id):
+        status = "👑 ВЛАДЕЛЕЦ"
+    elif await is_invincible(m.from_user.id):
+        status = "🛡️ НЕПРИКОСНОВЕННЫЙ"
+    elif data.get("is_admin"):
+        status = "🛠 Администратор"
+    else:
+        status = "Пользователь"
+    
     sub = "❌" if data["sub_expires"] < time.time() else f"✅ до {datetime.fromtimestamp(data['sub_expires']).strftime('%d.%m')}"
-    status = "Admin" if data.get("is_admin") or m.from_user.id == MY_ID else "User"
-    await m.answer(f"👤 **ПРОФИЛЬ**\n━━━━━━━━━━━━\n🆔 ID: `{m.from_user.id}`\n🎖 Статус: `{status}`\n💣 Заряды: `{data['strikes']}`\n👑 VIP: {sub}")
+    await m.answer(f"👤 **ПРОФИЛЬ CIPIZZA**\n━━━━━━━━━━━━\n🆔 ID: `{m.from_user.id}`\n🎖 Статус: {status}\n💣 Заряды: `{data['strikes']}`\n👑 VIP: {sub}")
 
-# --- МОДУЛЬ АТАКИ ---
 @dp.message(F.text == "☢️ НАНЕСТИ УДАР")
 async def attack_init(m: Message, state: FSMContext):
     if not await check_subscription(m.from_user.id): return
     data = await get_user_data(m.from_user.id)
-    if data['strikes'] <= 0 and m.from_user.id != MY_ID: return await m.answer("❌ Нет зарядов!")
-    await m.answer("📡 Пришлите `@username` цели для сноса:")
+    if data['strikes'] <= 0 and not await is_owner(m.from_user.id):
+        return await m.answer("❌ У вас закончились заряды!")
+    await m.answer("📡 Отправьте `@username` цели:")
     await state.set_state(AttackStates.waiting_for_target)
 
 @dp.message(AttackStates.waiting_for_target)
@@ -224,7 +261,7 @@ async def target_capture(m: Message, state: FSMContext):
             match = re.search(r'tg://resolve\?domain=.*?id=(\d+)', text)
             if match: target_id = match.group(1)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💥 ЗАПУСТИТЬ УДАР", callback_data=f"fire_{user}_{target_id}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💥 ЗАПУСТИТЬ", callback_data=f"fire_{user}_{target_id}")]])
     await m.answer(f"🎯 **ЦЕЛЬ:** @{user}\n🆔 **ID:** `{target_id}`", reply_markup=kb)
     await state.clear()
 
@@ -232,28 +269,29 @@ async def target_capture(m: Message, state: FSMContext):
 async def fire_strike(c: CallbackQuery):
     _, user, uid = c.data.split("_")
     data = await get_user_data(c.from_user.id)
-    if data['strikes'] <= 0 and c.from_user.id != MY_ID: return await c.answer("Ошибка баланса")
+    if data['strikes'] <= 0 and not await is_owner(c.from_user.id):
+        return await c.answer("❌ Нет зарядов!")
 
-    await c.message.edit_text("🚀 **ВЫПОЛНЯЕТСЯ УДАР...**")
+    await c.message.edit_text("🚀 **УДАР ВЫПОЛНЯЕТСЯ...**")
     
-    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = "abuse@telegram.org"
-    msg['Subject'] = f"REPORT-UID-{uid}-{random.randint(100,999)}"
-    msg.attach(MIMEText(f"Reporting illegal activity on Telegram by user @{user} (ID: {uid}).", 'plain'))
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = "abuse@telegram.org"
+    msg['Subject'] = f"CRITICAL REPORT {random.randint(10000,99999)}"
+    msg.attach(MIMEText(f"Reporting illegal content from @{user} (ID: {uid}).", 'plain'))
     
     try:
         await send(msg, hostname="smtp.gmail.com", port=465, username=EMAIL_SENDER, password=EMAIL_PASSWORD, use_tls=True)
-        if c.from_user.id != MY_ID:
+        if not await is_owner(c.from_user.id):
             data["strikes"] -= 1
             await save_user_data(c.from_user.id, data)
-        await c.message.edit_text(f"✅ **УДАР ЗАВЕРШЕН!**\nЖалоба на @{user} доставлена в поддержку.")
-        try: await bot.send_message(CHANNEL_ID, f"🔥 **STRIKE LOG**\nTarget: @{user}\nID: `{uid}`\nStatus: SENT ✅")
-        except: pass
+        await c.message.edit_text(f"✅ **УДАР УСПЕШНО ОТПРАВЛЕН**\nЖалоба на @{user} доставлена.")
     except:
-        await c.message.edit_text("❌ Ошибка SMTP сервера.")
+        await c.message.edit_text("❌ Ошибка отправки жалобы.")
 
-# --- WEB SERVER (RENDER) ---
+# ====================== WEB SERVER ======================
 async def handle_web_root(request):
-    return aiohttp.web.Response(text="GOD ENGINE IS ONLINE")
+    return aiohttp.web.Response(text="CIPIZZA IS ONLINE")
 
 async def run_web():
     webapp = aiohttp.web.Application()
